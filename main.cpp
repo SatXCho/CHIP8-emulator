@@ -19,15 +19,16 @@ int main(int argv, char **args)
     if (!initSDl(&sdl, &config))
         std::cout << "SDL not Initialized\n";
 
-    // clear screen to bg color
-    clearScreen(sdl, config);
+   
 
     // chip8 init
     chip8_t chip8 = {};
     const char *rom_name = args[1];
     if (!initChip8(&chip8, rom_name))
         std::cout << "CHIP8 not initialized\n";
-
+ // clear screen to bg color
+    clearScreen(sdl, config);
+    
     // main emulator loop
     while (chip8.state != QUIT)
     {

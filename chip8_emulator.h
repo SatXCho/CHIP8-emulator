@@ -522,13 +522,12 @@ void emulateInstruction(chip8_t *chip8, const config_t config)
         {
             // 0x00E0: Clears the screen.
             memset(&chip8->display[0], false, sizeof chip8->display);
-            std::cout << "cleared screen\n";
+            chip8->draw = true; // Will update screen on next 60hz tick
         }
         else if (chip8->inst.NN == 0xEE)
         {
             // 0x00EE: Returns from a subroutine.
             chip8->PC = *--chip8->stack_ptr;
-            std::cout << "return subr\n";
         }
         else
         {
@@ -565,9 +564,14 @@ void emulateInstruction(chip8_t *chip8, const config_t config)
 
     case 0x05:
         // 0x5XY0: Skips the next instruction if VX equals VY (usually the next instruction is a jump to skip a code block).
-        if (chip8->V[chip8->inst.X] != chip8->V[chip8->inst.Y])
+        if (chip8->inst.N != 0)
         {
-            chip8->PC += 2;
+            break; // Wrong opcode
+        }
+
+        if (chip8->V[chip8->inst.X] == chip8->V[chip8->inst.Y])
+        {
+            chip8->PC += 2; // Skip next opcode/instruction
         }
         break;
 
@@ -597,7 +601,7 @@ void emulateInstruction(chip8_t *chip8, const config_t config)
 
             case 2:
                 // 0x8XY2: Sets VX to VX and VY. (bitwise AND operation)
-                chip8->V[chip8->inst.X] |= chip8->V[chip8->inst.Y];
+                chip8->V[chip8->inst.X] &= chip8->V[chip8->inst.Y];
                 break;
 
             case 3:
@@ -623,20 +627,23 @@ void emulateInstruction(chip8_t *chip8, const config_t config)
 
             case 6:
                 // 0x8XY6: Stores the least significant bit of VX in VF and then shifts VX to the right by 1.
-                chip8->V[0xF] = chip8->V[chip8->inst.X] & 1;
+                carry = chip8->V[chip8->inst.X] & 1;
                 chip8->V[chip8->inst.X] >>= 1;
                 break;
 
             case 7:
                 // 0x8XY7: Sets VX to VY minus VX. VF is set to 0 when there's a borrow, and 1 when there is not.
                 carry = (chip8->V[chip8->inst.X] <= chip8->V[chip8->inst.Y]);
+
                 chip8->V[chip8->inst.X] = chip8->V[chip8->inst.Y] - chip8->V[chip8->inst.X];
+                chip8->V[0xF] = carry;
                 break;
 
             case 0xE:
-                //0x8XYE: Stores the most significant bit of VX in VF and then shifts VX to the left by 1.
-                chip8->V[0xF] = (chip8->V[chip8->inst.X] & 0x80) >> 7;
-                chip8->V[chip8->inst.X] >>= 1;
+                // 0x8XYE: Stores the most significant bit of VX in VF and then shifts VX to the left by 1.
+                carry = (chip8->V[chip8->inst.X] & 0x80) >> 7;
+                chip8->V[chip8->inst.X] <<= 1;
+                chip8->V[0xF] = carry;
                 break;
 
             default:
@@ -644,9 +651,27 @@ void emulateInstruction(chip8_t *chip8, const config_t config)
             }
         }
 
+    case 0x09:
+        // 0x9XY0: Skips the next instruction if VX does not equal VY. (Usually the next instruction is a jump to skip a code block);
+        if (chip8->V[chip8->inst.X] != chip8->V[chip8->inst.Y])
+        {
+            chip8->PC += 2;
+        }
+        break;
+
     case 0x0A:
-        // 0xANNN: Set index register I to NNN
+        // 0xANNN: Sets I to the address NNN.
         chip8->I = chip8->inst.NNN;
+        break;
+
+    case 0x0B:
+        // 0xBNNN: Jump to V0 + NNN
+        chip8->PC = chip8->V[0] + chip8->inst.NNN;
+        break;
+
+    case 0x0C:
+        // 0xCXNN: Sets register VX = rand() % 256 & NN (bitwise AND)
+        chip8->V[chip8->inst.X] = (rand() % 256) & chip8->inst.NN;
         break;
 
     case 0x0D:
@@ -691,9 +716,121 @@ void emulateInstruction(chip8_t *chip8, const config_t config)
             if (++Y_coord >= config.window_height)
                 break;
         }
-        // chip8->draw = true; // Will update screen on next 60hz tick
+        chip8->draw = true; // Will update screen on next 60hz tick
         break;
     }
+
+    case 0x0E:
+        if (chip8->inst.NN == 0x9E)
+        {
+            // 0xEX9E: Skips the next instruction if the key stored in VX is pressed (usually the next instruction is a jump to skip a code block).
+            if (chip8->keypad[chip8->V[chip8->inst.X]])
+                chip8->PC += 2;
+        }
+        else if (chip8->inst.NN == 0xA1)
+        {
+            // 0xEX9E: Skips the next instruction if the key stored in VX is not pressed (usually the next instruction is a jump to skip a code block).
+            if (!chip8->keypad[chip8->V[chip8->inst.X]])
+                chip8->PC += 2;
+        }
+        break;
+
+    case 0x0F:
+        switch (chip8->inst.NN)
+        {
+        case 0x0A:
+        {
+            // 0xFX0A: A key press is awaited, and then stored in VX (blocking operation, all instruction halted until next key event).
+            static bool any_key_pressed = false;
+            static uint8_t key = 0xFF;
+
+            for (uint8_t i = 0; key == 0xFF && i < sizeof chip8->keypad; i++)
+                if (chip8->keypad[i])
+                {
+                    key = i; // Save pressed key to check until it is released
+                    any_key_pressed = true;
+                    break;
+                }
+
+            // If no key has been pressed yet, keep getting the current opcode & running this instruction
+            if (!any_key_pressed)
+                chip8->PC -= 2;
+            else
+            {
+                // A key has been pressed, also wait until it is released to set the key in VX
+                if (chip8->keypad[key]) // "Busy loop" until key is released
+                    chip8->PC -= 2;
+                else
+                {
+                    chip8->V[chip8->inst.X] = key; // VX = key
+                    key = 0xFF;                    // Reset key to not found
+                    any_key_pressed = false;       // Reset to nothing pressed yet
+                }
+            }
+            break;
+        }
+
+        case 0x1E:
+            // 0xFX1E: Adds VX to I. VF is not affected.
+            chip8->I += chip8->V[chip8->inst.X];
+            break;
+
+        case 0x07:
+            // 0xFX07: Sets VX to the value of the delay timer.
+            chip8->V[chip8->inst.X] = chip8->delay_timer;
+            break;
+
+        case 0x15:
+            // 0xFX15: Sets VX to the value of the delay timer.
+            chip8->delay_timer = chip8->V[chip8->inst.X];
+            break;
+
+        case 0x18:
+            // 0xFX18: Sets the sound timer to VX.
+            chip8->sound_timer = chip8->V[chip8->inst.X];
+            break;
+
+        case 0x29:
+            // 0xFX29: Sets I to the location of the sprite for the character in VX. Characters 0-F (in hexadecimal) are represented by a 4x5 font.
+            chip8->I = chip8->V[chip8->inst.X] * 5;
+            break;
+
+        case 0x33:
+        {
+            // 0xFX33: Stores the binary-coded decimal representation of VX,
+            // with the hundreds digit in memory at location in I, the tens digit at location I+1,
+            // and the ones digit at location I+2.
+            uint8_t bcd = chip8->V[chip8->inst.X];
+            chip8->ram[chip8->I + 2] = bcd % 10;
+            bcd /= 10;
+            chip8->ram[chip8->I + 1] = bcd % 10;
+            bcd /= 10;
+            chip8->ram[chip8->I] = bcd;
+            break;
+        }
+
+        case 0x55:
+            // 0xFX55: Stores from V0 to VX (including VX) in memory, starting at address I. 
+            // The offset from I is increased by 1 for each value written, but I itself is left unmodified.
+            for (uint8_t i = 0; i <= chip8->inst.X; i++)
+            {
+                chip8->ram[chip8->I + i] = chip8->V[i];
+            }
+            break;
+
+        case 0x65:
+            // 0xFX65: Fills from V0 to VX (including VX) with values from memory, starting at address I. 
+            // The offset from I is increased by 1 for each value read, but I itself is left unmodified
+            for (uint8_t i = 0; i <= chip8->inst.X; i++)
+            {
+                chip8->V[i] = chip8->ram[chip8->I + i];
+            }
+            break;
+
+        default:
+            break;
+        }
+        break;
 
     default:
         break;

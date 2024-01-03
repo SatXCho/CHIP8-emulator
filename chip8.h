@@ -53,5 +53,6 @@ typedef struct
     uint8_t sound_timer;   // --> 60Hz & plays tone when > 0
     bool keypad[16];       // Hex
     const char *rom_name;
-    inst_t inst; // currently executing instruction
+    inst_t inst;           // currently executing instruction
+    bool draw;             // Update the screen yes/no
 } chip8_t;
